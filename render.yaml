@@ -47,6 +47,8 @@ services:
         value: "21"
       - key: EXTRACTION_RENDER_DPI
         value: "120"
+      - key: STALE_JOB_MINUTES
+        value: "30"
       - key: RESEND_API_KEY
         sync: false
       - key: RESEND_FROM

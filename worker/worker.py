@@ -28,6 +28,7 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", "2"))
 MAX_PAGES = int(os.environ.get("EXTRACTION_MAX_PAGES", "21"))
 RENDER_DPI = int(os.environ.get("EXTRACTION_RENDER_DPI", "120"))
+STALE_JOB_MINUTES = int(os.environ.get("STALE_JOB_MINUTES", "30"))
 
 
 def _get_conn() -> psycopg.Connection:
@@ -121,19 +122,24 @@ def poll_loop() -> None:
         try:
             with _get_conn() as conn:
                 with conn.cursor() as cur:
-                    # Atomically claim one queued job
+                    # Atomically claim one queued job, or reclaim an in-progress
+                    # job abandoned by a deploy/crash.
                     cur.execute("""
                         UPDATE extraction_jobs
                         SET status = 'rendering', updated_at = NOW()
                         WHERE id = (
                             SELECT id FROM extraction_jobs
                             WHERE status = 'queued'
+                               OR (
+                                    status IN ('rendering', 'extracting')
+                                    AND updated_at < NOW() - (%s * INTERVAL '1 minute')
+                               )
                             ORDER BY created_at ASC
                             LIMIT 1
                             FOR UPDATE SKIP LOCKED
                         )
-                        RETURNING id, file_name, pdf_bytes, user_email
-                    """)
+                        RETURNING id, file_name, pdf_bytes, user_email, status
+                    """, (STALE_JOB_MINUTES,))
                     job = cur.fetchone()
                     conn.commit()
 
