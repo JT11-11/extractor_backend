@@ -104,8 +104,42 @@ def _extract_statement_batch(
     )
 
     raw_text: str = response["message"]["content"]
-    parsed = _parse_model_json(raw_text)
+    try:
+        parsed = _parse_model_json(raw_text)
+    except Exception as exc:
+        print(
+            "[Extraction] Model returned invalid JSON; attempting repair "
+            f"for pages {pages[0].page_number}-{pages[-1].page_number}: {exc}",
+            flush=True,
+        )
+        parsed = _repair_model_json(client, raw_text)
     return _normalize_extraction(parsed)
+
+
+def _repair_model_json(client: ollama.Client, raw_text: str) -> Any:
+    response = client.chat(
+        model=OLLAMA_MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You repair malformed JSON. Return only valid JSON. "
+                    "Do not add markdown fences, comments, or explanations."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Repair this malformed bank statement extraction JSON so it "
+                    "parses correctly. Preserve all fields and transactions.\n\n"
+                    + raw_text
+                ),
+            },
+        ],
+        options={"temperature": 0},
+    )
+    repaired_text: str = response["message"]["content"]
+    return _parse_model_json(repaired_text)
 
 
 def _merge_extractions(extractions: list[dict[str, Any]]) -> dict[str, Any]:
