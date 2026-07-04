@@ -29,6 +29,7 @@ POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", "2"))
 MAX_PAGES = int(os.environ.get("EXTRACTION_MAX_PAGES", "21"))
 RENDER_DPI = int(os.environ.get("EXTRACTION_RENDER_DPI", "120"))
 STALE_JOB_MINUTES = int(os.environ.get("STALE_JOB_MINUTES", "30"))
+WORKER_VERSION = "2026-07-04-batched-extraction-v2"
 
 
 def _get_conn() -> psycopg.Connection:
@@ -71,8 +72,8 @@ def process_job(job: dict) -> None:
 
                 # --- Extract ---
                 print(
-                    f"[Worker] Calling vision model for job {job_id} "
-                    f"({len(render_result.rendered_pages)} pages)",
+                    f"[Worker] Starting batched extraction for job {job_id} "
+                    f"({len(render_result.rendered_pages)} rendered pages)",
                     flush=True,
                 )
                 extraction = extract_statement_from_pages(
@@ -116,7 +117,14 @@ def process_job(job: dict) -> None:
 
 
 def poll_loop() -> None:
-    print("[Worker] Python background worker started. Polling for jobs...", flush=True)
+    print(
+        "[Worker] Python background worker started. "
+        f"version={WORKER_VERSION} "
+        f"poll={POLL_INTERVAL}s max_pages={MAX_PAGES} dpi={RENDER_DPI} "
+        f"stale_after={STALE_JOB_MINUTES}m",
+        flush=True,
+    )
+    print("[Worker] Polling for jobs...", flush=True)
 
     while True:
         try:
