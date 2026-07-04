@@ -1,0 +1,48 @@
+services:
+  # FastAPI web service — handles upload, job status, chat Q&A
+  - type: web
+    name: statement-api
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      # Set all values in the Render dashboard (sync: false = not stored in repo)
+      - key: DATABASE_URL
+        sync: false
+      - key: NEON_AUTH_BASE_URL
+        sync: false
+      - key: OLLAMA_HOST
+        sync: false
+      - key: OLLAMA_API_KEY
+        sync: false
+      - key: OLLAMA_MODEL
+        sync: false
+      - key: FRONTEND_ORIGIN
+        sync: false
+
+  # Python background worker — renders PDFs, runs vision model, sends emails
+  - type: worker
+    name: statement-worker
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python worker/worker.py
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: OLLAMA_HOST
+        sync: false
+      - key: OLLAMA_API_KEY
+        sync: false
+      - key: OLLAMA_MODEL
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: POLL_INTERVAL_SECONDS
+        value: "2"
