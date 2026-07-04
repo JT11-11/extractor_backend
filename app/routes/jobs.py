@@ -61,7 +61,7 @@ async def list_jobs(
             await cur.execute(
                 """
                 SELECT id::text, status, file_name,
-                       result, error,
+                       NULL::jsonb AS result, error,
                        created_at::text, updated_at::text
                 FROM extraction_jobs
                 WHERE user_id = %s
@@ -75,22 +75,35 @@ async def list_jobs(
     return [_format_row(r) for r in rows]
 
 
+@router.get("/{job_id}/result", response_model=JobStatus)
+async def get_job_result(
+    job_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    return await _get_job_row(job_id, user.user_id, include_result=True)
+
+
 @router.get("/{job_id}", response_model=JobStatus)
 async def get_job(
     job_id: str,
     user: CurrentUser = Depends(get_current_user),
 ) -> dict:
+    return await _get_job_row(job_id, user.user_id, include_result=True)
+
+
+async def _get_job_row(job_id: str, user_id: str, include_result: bool) -> dict:
+    result_column = "result" if include_result else "NULL::jsonb AS result"
     async with get_conn() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                """
+                f"""
                 SELECT id::text, status, file_name,
-                       result, error,
+                       {result_column}, error,
                        created_at::text, updated_at::text
                 FROM extraction_jobs
                 WHERE id = %s AND user_id = %s
                 """,
-                (job_id, user.user_id),
+                (job_id, user_id),
             )
             row = await cur.fetchone()
 
