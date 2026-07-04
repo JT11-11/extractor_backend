@@ -49,6 +49,23 @@ def _update_status(cur: psycopg.Cursor, job_id: str, status: str, **extras) -> N
     )
 
 
+def update_job_status(job_id: str, status: str, **extras) -> None:
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            _update_status(cur, job_id, status, **extras)
+            conn.commit()
+
+
+def mark_notified(job_id: str) -> None:
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE extraction_jobs SET notified_at = NOW() WHERE id = %s",
+                (job_id,),
+            )
+            conn.commit()
+
+
 def process_job(job: dict) -> None:
     job_id: str = str(job["id"])
     file_name: str = job["file_name"]
@@ -57,63 +74,46 @@ def process_job(job: dict) -> None:
 
     print(f"[Worker] Processing job {job_id} ({file_name}) for {user_email}", flush=True)
 
-    with _get_conn() as conn:
-        with conn.cursor() as cur:
-            try:
-                # --- Render ---
-                print(f"[Worker] Rendering PDF pages for job {job_id}", flush=True)
-                render_result = render_pdf_bytes_to_images(
-                    pdf_bytes,
-                    max_pages=MAX_PAGES,
-                    dpi=RENDER_DPI,
-                )
-                _update_status(cur, job_id, "extracting")
-                conn.commit()
+    try:
+        # --- Render ---
+        print(f"[Worker] Rendering PDF pages for job {job_id}", flush=True)
+        render_result = render_pdf_bytes_to_images(
+            pdf_bytes,
+            max_pages=MAX_PAGES,
+            dpi=RENDER_DPI,
+        )
+        update_job_status(job_id, "extracting")
 
-                # --- Extract ---
-                print(
-                    f"[Worker] Starting batched extraction for job {job_id} "
-                    f"({len(render_result.rendered_pages)} rendered pages)",
-                    flush=True,
-                )
-                extraction = extract_statement_from_pages(
-                    file_name, render_result.rendered_pages
-                )
+        # --- Extract ---
+        print(
+            f"[Worker] Starting batched extraction for job {job_id} "
+            f"({len(render_result.rendered_pages)} rendered pages)",
+            flush=True,
+        )
+        extraction = extract_statement_from_pages(
+            file_name, render_result.rendered_pages
+        )
 
-                # --- Save result ---
-                _update_status(
-                    cur,
-                    job_id,
-                    "complete",
-                    result=json.dumps(extraction),
-                )
-                conn.commit()
-                print(f"[Worker] Job {job_id} complete", flush=True)
+        # --- Save result ---
+        update_job_status(
+            job_id,
+            "complete",
+            result=json.dumps(extraction),
+        )
+        print(f"[Worker] Job {job_id} complete", flush=True)
 
-                # --- Email ---
-                send_completion_email(user_email, file_name, job_id)
-                cur.execute(
-                    "UPDATE extraction_jobs SET notified_at = NOW() WHERE id = %s",
-                    (job_id,),
-                )
-                conn.commit()
+        # --- Email ---
+        send_completion_email(user_email, file_name, job_id)
+        mark_notified(job_id)
 
-            except Exception as exc:
-                print(f"[Worker] Job {job_id} failed: {exc}", flush=True)
-                try:
-                    conn.rollback()
-                    with conn.cursor() as err_cur:
-                        _update_status(err_cur, job_id, "failed", error=str(exc))
-                        conn.commit()
-                    send_failure_email(user_email, file_name, str(exc))
-                    with conn.cursor() as notify_cur:
-                        notify_cur.execute(
-                            "UPDATE extraction_jobs SET notified_at = NOW() WHERE id = %s",
-                            (job_id,),
-                        )
-                        conn.commit()
-                except Exception as inner:
-                    print(f"[Worker] Could not mark job {job_id} as failed: {inner}", flush=True)
+    except Exception as exc:
+        print(f"[Worker] Job {job_id} failed: {exc}", flush=True)
+        try:
+            update_job_status(job_id, "failed", error=str(exc))
+            send_failure_email(user_email, file_name, str(exc))
+            mark_notified(job_id)
+        except Exception as inner:
+            print(f"[Worker] Could not mark job {job_id} as failed: {inner}", flush=True)
 
 
 def poll_loop() -> None:
