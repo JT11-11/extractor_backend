@@ -1,11 +1,12 @@
 services:
-  # FastAPI web service — handles upload, job status, chat Q&A
+  # FastAPI web service - handles upload, job status, chat Q&A
   - type: web
     name: statement-api
-    runtime: python
+    runtime: docker
     plan: starter
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: sh -c "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
     healthCheckPath: /health
     envVars:
       # Set all values in the Render dashboard (sync: false = not stored in repo)
@@ -22,13 +23,14 @@ services:
       - key: FRONTEND_ORIGIN
         sync: false
 
-  # Python background worker — renders PDFs, runs vision model, sends emails
+  # Python background worker - renders PDFs, runs vision model, sends emails
   - type: worker
     name: statement-worker
-    runtime: python
+    runtime: docker
     plan: starter
-    buildCommand: pip install -r requirements.txt
-    startCommand: python worker/worker.py
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: python worker/worker.py
     envVars:
       - key: DATABASE_URL
         sync: false
