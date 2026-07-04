@@ -28,9 +28,8 @@ services:
     name: statement-worker
     runtime: docker
     plan: starter
-    dockerfilePath: ./Dockerfile
+    dockerfilePath: ./Dockerfile.worker
     dockerContext: .
-    dockerCommand: python worker/worker.py
     envVars:
       - key: DATABASE_URL
         sync: false

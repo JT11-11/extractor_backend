@@ -17,7 +17,8 @@ docker run --env-file .env -p 8000:8000 -e PORT=8000 extractor-backend
 Run the worker locally:
 
 ```bash
-docker run --env-file .env extractor-backend python worker/worker.py
+docker build -f Dockerfile.worker -t extractor-worker .
+docker run --env-file .env extractor-worker
 ```
 
 ## Render
@@ -25,7 +26,7 @@ docker run --env-file .env extractor-backend python worker/worker.py
 This repo includes a `render.yaml` Blueprint with two Docker services:
 
 - `statement-api`: FastAPI web service, health check at `/health`
-- `statement-worker`: background worker for queued extraction jobs
+- `statement-worker`: background worker for queued extraction jobs, using `Dockerfile.worker`
 
 Set these environment variables in Render:
 
@@ -38,3 +39,20 @@ Set these environment variables in Render:
 - `RESEND_API_KEY`
 - `RESEND_FROM`
 - `FRONTEND_URL`
+
+## Manual Render worker setup
+
+If Render does not show a start command field for Docker, use the worker
+Dockerfile instead:
+
+- Service type: Background Worker
+- Runtime: Docker
+- Root directory: `backend`
+- Dockerfile path: `./Dockerfile.worker`
+- Docker context: `.`
+
+The worker Dockerfile already runs:
+
+```bash
+python worker/worker.py
+```
