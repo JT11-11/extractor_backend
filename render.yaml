@@ -39,6 +39,14 @@ services:
         sync: false
       - key: OLLAMA_MODEL
         sync: false
+      - key: OLLAMA_TIMEOUT_SECONDS
+        value: "240"
+      - key: EXTRACTION_PAGES_PER_REQUEST
+        value: "4"
+      - key: EXTRACTION_MAX_PAGES
+        value: "21"
+      - key: EXTRACTION_RENDER_DPI
+        value: "120"
       - key: RESEND_API_KEY
         sync: false
       - key: RESEND_FROM

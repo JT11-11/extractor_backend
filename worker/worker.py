@@ -26,6 +26,8 @@ from worker.pdf_render import render_pdf_bytes_to_images
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", "2"))
+MAX_PAGES = int(os.environ.get("EXTRACTION_MAX_PAGES", "21"))
+RENDER_DPI = int(os.environ.get("EXTRACTION_RENDER_DPI", "120"))
 
 
 def _get_conn() -> psycopg.Connection:
@@ -58,7 +60,11 @@ def process_job(job: dict) -> None:
             try:
                 # --- Render ---
                 print(f"[Worker] Rendering PDF pages for job {job_id}", flush=True)
-                render_result = render_pdf_bytes_to_images(pdf_bytes)
+                render_result = render_pdf_bytes_to_images(
+                    pdf_bytes,
+                    max_pages=MAX_PAGES,
+                    dpi=RENDER_DPI,
+                )
                 _update_status(cur, job_id, "extracting")
                 conn.commit()
 
