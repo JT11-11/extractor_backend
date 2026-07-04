@@ -19,6 +19,8 @@ from worker.pdf_render import RenderedPage
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "https://ollama.com")
 OLLAMA_API_KEY = os.environ.get("OLLAMA_API_KEY", "")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3.5-vl")
+OLLAMA_TIMEOUT_SECONDS = int(os.environ.get("OLLAMA_TIMEOUT_SECONDS", "240"))
+PAGES_PER_REQUEST = max(1, int(os.environ.get("EXTRACTION_PAGES_PER_REQUEST", "4")))
 
 _SYSTEM_PROMPT = (
     "You extract bank statement transactions from page images. "
@@ -52,11 +54,36 @@ def extract_statement_from_pages(
     pages: list[RenderedPage],
 ) -> dict[str, Any]:
     """Call the Ollama vision model and return a normalised extraction dict."""
+    if not pages:
+        raise ValueError("No rendered pages were provided for extraction.")
+
+    extractions: list[dict[str, Any]] = []
+    for start in range(0, len(pages), PAGES_PER_REQUEST):
+        batch = pages[start : start + PAGES_PER_REQUEST]
+        print(
+            "[Extraction] Calling vision model for "
+            f"pages {batch[0].page_number}-{batch[-1].page_number} "
+            f"of {len(pages)} using {OLLAMA_MODEL}",
+            flush=True,
+        )
+        extractions.append(_extract_statement_batch(file_name, batch))
+
+    return _merge_extractions(extractions)
+
+
+def _extract_statement_batch(
+    file_name: str,
+    pages: list[RenderedPage],
+) -> dict[str, Any]:
     headers = {}
     if OLLAMA_API_KEY:
         headers["Authorization"] = f"Bearer {OLLAMA_API_KEY}"
 
-    client = ollama.Client(host=OLLAMA_HOST, headers=headers)
+    client = ollama.Client(
+        host=OLLAMA_HOST,
+        headers=headers,
+        timeout=OLLAMA_TIMEOUT_SECONDS,
+    )
 
     # The ollama client expects `content` as a plain string and images as a
     # separate `images` list of base64 strings — not OpenAI-style content parts.
@@ -79,6 +106,51 @@ def extract_statement_from_pages(
     raw_text: str = response["message"]["content"]
     parsed = _parse_model_json(raw_text)
     return _normalize_extraction(parsed)
+
+
+def _merge_extractions(extractions: list[dict[str, Any]]) -> dict[str, Any]:
+    if len(extractions) == 1:
+        return extractions[0]
+
+    fields_by_key: dict[str, dict] = {}
+    transactions: list[dict] = []
+    notes: list[str] = []
+    merged: dict[str, Any] = {
+        "institution": None,
+        "accountName": None,
+        "accountNumber": None,
+        "cardName": None,
+        "nameOnCard": None,
+        "statementPeriod": None,
+        "currency": None,
+    }
+
+    for extraction in extractions:
+        for key in merged:
+            if merged[key] is None and extraction.get(key) is not None:
+                merged[key] = extraction.get(key)
+
+        for field in extraction.get("fields", []):
+            if isinstance(field, dict):
+                _add_field(fields_by_key, field)
+
+        txns = extraction.get("transactions", [])
+        if isinstance(txns, list):
+            transactions.extend(txn for txn in txns if isinstance(txn, dict))
+
+        batch_notes = extraction.get("notes", [])
+        if isinstance(batch_notes, list):
+            notes.extend(note for note in batch_notes if isinstance(note, str))
+
+    for field in _fields_from_rows(transactions):
+        _add_field(fields_by_key, field)
+
+    return {
+        **merged,
+        "fields": list(fields_by_key.values()),
+        "transactions": transactions,
+        "notes": notes,
+    }
 
 
 # ---------------------------------------------------------------------------

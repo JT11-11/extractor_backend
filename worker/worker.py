@@ -26,6 +26,10 @@ from worker.pdf_render import render_pdf_bytes_to_images
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", "2"))
+MAX_PAGES = int(os.environ.get("EXTRACTION_MAX_PAGES", "21"))
+RENDER_DPI = int(os.environ.get("EXTRACTION_RENDER_DPI", "120"))
+STALE_JOB_MINUTES = int(os.environ.get("STALE_JOB_MINUTES", "30"))
+WORKER_VERSION = "2026-07-04-batched-extraction-v2"
 
 
 def _get_conn() -> psycopg.Connection:
@@ -58,14 +62,18 @@ def process_job(job: dict) -> None:
             try:
                 # --- Render ---
                 print(f"[Worker] Rendering PDF pages for job {job_id}", flush=True)
-                render_result = render_pdf_bytes_to_images(pdf_bytes)
+                render_result = render_pdf_bytes_to_images(
+                    pdf_bytes,
+                    max_pages=MAX_PAGES,
+                    dpi=RENDER_DPI,
+                )
                 _update_status(cur, job_id, "extracting")
                 conn.commit()
 
                 # --- Extract ---
                 print(
-                    f"[Worker] Calling vision model for job {job_id} "
-                    f"({len(render_result.rendered_pages)} pages)",
+                    f"[Worker] Starting batched extraction for job {job_id} "
+                    f"({len(render_result.rendered_pages)} rendered pages)",
                     flush=True,
                 )
                 extraction = extract_statement_from_pages(
@@ -109,25 +117,37 @@ def process_job(job: dict) -> None:
 
 
 def poll_loop() -> None:
-    print("[Worker] Python background worker started. Polling for jobs...", flush=True)
+    print(
+        "[Worker] Python background worker started. "
+        f"version={WORKER_VERSION} "
+        f"poll={POLL_INTERVAL}s max_pages={MAX_PAGES} dpi={RENDER_DPI} "
+        f"stale_after={STALE_JOB_MINUTES}m",
+        flush=True,
+    )
+    print("[Worker] Polling for jobs...", flush=True)
 
     while True:
         try:
             with _get_conn() as conn:
                 with conn.cursor() as cur:
-                    # Atomically claim one queued job
+                    # Atomically claim one queued job, or reclaim an in-progress
+                    # job abandoned by a deploy/crash.
                     cur.execute("""
                         UPDATE extraction_jobs
                         SET status = 'rendering', updated_at = NOW()
                         WHERE id = (
                             SELECT id FROM extraction_jobs
                             WHERE status = 'queued'
+                               OR (
+                                    status IN ('rendering', 'extracting')
+                                    AND updated_at < NOW() - (%s * INTERVAL '1 minute')
+                               )
                             ORDER BY created_at ASC
                             LIMIT 1
                             FOR UPDATE SKIP LOCKED
                         )
-                        RETURNING id, file_name, pdf_bytes, user_email
-                    """)
+                        RETURNING id, file_name, pdf_bytes, user_email, status
+                    """, (STALE_JOB_MINUTES,))
                     job = cur.fetchone()
                     conn.commit()
 
