@@ -176,6 +176,12 @@ def _merge_extractions(extractions: list[dict[str, Any]]) -> dict[str, Any]:
         if isinstance(batch_notes, list):
             notes.extend(note for note in batch_notes if isinstance(note, str))
 
+    transactions = _fill_row_card_metadata(
+        transactions,
+        _str_or_none(merged.get("cardName")),
+        _str_or_none(merged.get("nameOnCard")),
+    )
+
     for field in _fields_from_rows(transactions):
         _add_field(fields_by_key, field)
 
@@ -198,10 +204,9 @@ def _parse_model_json(content: str) -> Any:
     cleaned = re.sub(r"^```(?:json)?", "", cleaned, flags=re.IGNORECASE).strip()
     cleaned = re.sub(r"```$", "", cleaned, flags=re.IGNORECASE).strip()
 
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        pass
+    parsed = _loads_json_with_minor_repairs(cleaned)
+    if parsed is not None:
+        return parsed
 
     # Try to extract the first JSON object or array
     obj_start = cleaned.find("{")
@@ -219,9 +224,51 @@ def _parse_model_json(content: str) -> Any:
 
     last = max(cleaned.rfind("}"), cleaned.rfind("]"))
     if first >= 0 and last > first:
-        return json.loads(cleaned[first : last + 1])
+        parsed = _loads_json_with_minor_repairs(cleaned[first : last + 1])
+        if parsed is not None:
+            return parsed
 
     raise ValueError("The model did not return parseable JSON.")
+
+
+def _loads_json_with_minor_repairs(value: str) -> Any | None:
+    candidate = _remove_trailing_commas(value)
+    for _ in range(12):
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            repaired = _repair_missing_comma(candidate, exc)
+            if repaired == candidate:
+                return None
+            candidate = _remove_trailing_commas(repaired)
+    return None
+
+
+def _remove_trailing_commas(value: str) -> str:
+    return re.sub(r",\s*([}\]])", r"\1", value)
+
+
+def _repair_missing_comma(value: str, exc: json.JSONDecodeError) -> str:
+    if "Expecting ',' delimiter" not in exc.msg:
+        return value
+
+    pos = exc.pos
+    next_pos = pos
+    while next_pos < len(value) and value[next_pos].isspace():
+        next_pos += 1
+
+    prev_pos = pos - 1
+    while prev_pos >= 0 and value[prev_pos].isspace():
+        prev_pos -= 1
+
+    if (
+        0 <= prev_pos < next_pos < len(value)
+        and value[next_pos] == '"'
+        and value[prev_pos] in '"}]0123456789'
+    ):
+        return value[:next_pos] + "," + value[next_pos:]
+
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -306,19 +353,32 @@ def _normalize_object(data: Any) -> dict[str, Any]:
         else:
             transactions.append({"values": _row_to_values(row)})
 
-    fields = data.get("fields") or _fields_from_rows(transactions)
+    card_name = _first_string(data, ["cardName", "card", "cardType", "cardProduct", "cardDescription"]) or _first_string_from_rows(
+        transactions,
+        ["cardName", "card", "cardType", "cardProduct", "cardDescription"],
+    )
+    name_on_card = _first_string(data, ["nameOnCard", "cardholderName", "cardHolderName", "name"]) or _first_string_from_rows(
+        transactions,
+        ["nameOnCard", "cardholderName", "cardHolderName", "name"],
+    )
+    transactions = _fill_row_card_metadata(transactions, card_name, name_on_card)
+
+    fields_by_key: dict[str, dict] = {}
+    for field in data.get("fields") or []:
+        if isinstance(field, dict):
+            _add_field(fields_by_key, field)
+    for field in _fields_from_rows(transactions):
+        _add_field(fields_by_key, field)
 
     return {
         "institution": _str_or_none(data.get("institution")),
         "accountName": _str_or_none(data.get("accountName")),
         "accountNumber": _str_or_none(data.get("accountNumber")),
-        "cardName": _first_string(data, ["cardName", "card", "cardType", "cardProduct", "cardDescription"])
-            or _first_string_from_rows(transactions, ["cardName", "card", "cardType", "cardProduct", "cardDescription"]),
-        "nameOnCard": _first_string(data, ["nameOnCard", "cardholderName", "cardHolderName", "name"])
-            or _first_string_from_rows(transactions, ["nameOnCard", "cardholderName", "cardHolderName", "name"]),
+        "cardName": card_name,
+        "nameOnCard": name_on_card,
         "statementPeriod": _str_or_none(data.get("statementPeriod")),
         "currency": _str_or_none(data.get("currency")),
-        "fields": fields,
+        "fields": list(fields_by_key.values()),
         "transactions": transactions,
         "notes": data.get("notes") if isinstance(data.get("notes"), list) else [],
     }
@@ -374,6 +434,31 @@ def _add_field(fields_by_key: dict, field: dict) -> None:
     if field.get("kind"):
         entry["kind"] = field["kind"]
     fields_by_key[key] = entry
+
+
+def _fill_row_card_metadata(
+    transactions: list[dict],
+    card_name: str | None,
+    name_on_card: str | None,
+) -> list[dict]:
+    if not card_name and not name_on_card:
+        return transactions
+
+    filled: list[dict] = []
+    for transaction in transactions:
+        values = transaction.get("values")
+        if not isinstance(values, dict):
+            filled.append(transaction)
+            continue
+
+        next_values = dict(values)
+        if card_name and not _str_or_none(next_values.get("cardName")):
+            next_values["cardName"] = card_name
+        if name_on_card and not _str_or_none(next_values.get("nameOnCard")):
+            next_values["nameOnCard"] = name_on_card
+        filled.append({**transaction, "values": next_values})
+
+    return filled
 
 
 def _label_from_key(key: str) -> str:
